@@ -1286,7 +1286,7 @@ void write_output_files() {
         write_file_if_changed(target_hpp, hdr.str());
     }
     if (target_cpp != "") {
-        write_binary_file(target_cpp, src.str());
+        write_file_if_changed(target_cpp, src.str());
     }
 }
 
