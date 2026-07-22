@@ -1,0 +1,38 @@
+name: Sync Upstream llama.cpp
+
+on:
+  schedule:
+    - cron: '0 */2 * * *' # Runs every 2 hours
+  workflow_dispatch: # Allows manual triggering from GitHub UI
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/ggml-org/llama.cpp.git || true
+
+      - name: Fetch upstream master
+        run: |
+          git fetch upstream master
+
+      - name: Merge upstream/master into master
+        run: |
+          git merge upstream/master --no-edit || (echo "Conflict detected during merge. Please resolve manually." && exit 1)
+
+      - name: Push updates to fork
+        run: |
+          git push origin master
