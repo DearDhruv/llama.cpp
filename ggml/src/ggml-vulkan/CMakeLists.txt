@@ -63,6 +63,10 @@ if (Vulkan_FOUND)
                              ggml-vulkan.cpp
                              ../../include/ggml-vulkan.h
                             )
+    find_path(VULKAN_HPP_INCLUDE_DIR NAMES vulkan/vulkan.hpp PATHS "/opt/homebrew/include" "/usr/local/include" NO_CMAKE_FIND_ROOT_PATH)
+    if (VULKAN_HPP_INCLUDE_DIR)
+        target_include_directories(ggml-vulkan PRIVATE ${VULKAN_HPP_INCLUDE_DIR})
+    endif()
 
     set(VULKAN_SHADER_GEN_CMAKE_ARGS "")
 
@@ -183,7 +187,7 @@ if (Vulkan_FOUND)
                    ${VULKAN_SHADER_GEN_CMAKE_ARGS}
 
         BUILD_COMMAND ${CMAKE_COMMAND} --build . --config $<CONFIG>
-        BUILD_ALWAYS  TRUE
+        BUILD_ALWAYS  FALSE
 
         # NOTE: When DESTDIR is set using Makefile generators and
         # "make install" triggers the build step, vulkan-shaders-gen
@@ -201,6 +205,11 @@ if (Vulkan_FOUND)
     set (_ggml_vk_input_dir  "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders")
     set (_ggml_vk_output_dir "${CMAKE_CURRENT_BINARY_DIR}/vulkan-shaders.spv")
 
+    add_custom_command(
+        OUTPUT ${_ggml_vk_genshaders_cmd}
+        DEPENDS vulkan-shaders-gen
+    )
+
     file(GLOB _ggml_vk_shader_files CONFIGURE_DEPENDS "${_ggml_vk_input_dir}/*.comp")
 
     # Because external projects do not provide source-level tracking,
@@ -217,7 +226,7 @@ if (Vulkan_FOUND)
             --output-dir ${_ggml_vk_output_dir}
             --target-hpp ${_ggml_vk_header}
         DEPENDS ${_ggml_vk_shaders_gen_sources}
-                vulkan-shaders-gen
+                ${_ggml_vk_genshaders_cmd}
         COMMENT "Generate vulkan shaders header"
     )
     target_sources(ggml-vulkan PRIVATE ${_ggml_vk_header})
@@ -237,10 +246,11 @@ if (Vulkan_FOUND)
                 --target-cpp ${_ggml_vk_target_cpp}
             DEPENDS ${file_full}
                     ${_ggml_vk_shaders_gen_sources}
-                    vulkan-shaders-gen
+                    ${_ggml_vk_genshaders_cmd}
             COMMENT "Generate vulkan shaders for ${file}"
         )
         target_sources(ggml-vulkan PRIVATE ${_ggml_vk_target_cpp})
+        set_source_files_properties(${_ggml_vk_target_cpp} PROPERTIES COMPILE_FLAGS "-O0")
     endforeach()
 
 else()

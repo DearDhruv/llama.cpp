@@ -3193,9 +3193,14 @@ static std::vector<uint32_t> ggml_vk_find_memory_properties(const vk::PhysicalDe
 
 static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std::initializer_list<vk::MemoryPropertyFlags> & req_flags_list,
                                        void *import_ptr = nullptr) {
+    if (!device || !device->device) {
+        std::cerr << "ggml_vulkan: create_buffer failed - null device handle" << std::endl;
+        return nullptr;
+    }
     VK_LOG_DEBUG("ggml_vk_create_buffer(" << device->name << ", " << size << ", " << to_string(req_flags_list.begin()[0]) << ", " << to_string(req_flags_list.begin()[req_flags_list.size()-1]) << ")");
     if (size > device->max_buffer_size) {
-        throw vk::OutOfDeviceMemoryError("Requested buffer size exceeds device buffer size limit");
+        std::cerr << "ggml_vulkan: Requested size " << size << " exceeds max_buffer_size " << device->max_buffer_size << std::endl;
+        return nullptr;
     }
 
     vk_buffer buf = std::make_shared<vk_buffer_struct>();
@@ -3227,7 +3232,20 @@ static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std
         buffer_create_info.setPNext(&external_memory_bci);
     }
 
-    buf->buffer = device->device.createBuffer(buffer_create_info);
+    try {
+        buf->buffer = device->device.createBuffer(buffer_create_info);
+    } catch (const std::exception& e) {
+        std::cerr << "ggml_vulkan: createBuffer failed: " << e.what() << std::endl;
+        return {};
+    } catch (...) {
+        std::cerr << "ggml_vulkan: createBuffer unknown error" << std::endl;
+        return {};
+    }
+
+    if (!buf->buffer) {
+        std::cerr << "ggml_vulkan: createBuffer returned null handle" << std::endl;
+        return {};
+    }
 
     vk::MemoryRequirements mem_req = device->device.getBufferMemoryRequirements(buf->buffer);
 
@@ -3359,7 +3377,10 @@ static vk_buffer ggml_vk_create_buffer_check(vk_device& device, size_t size, vk:
 }
 
 static vk_buffer ggml_vk_create_buffer_device(vk_device& device, size_t size) {
-    vk_buffer buf;
+    if (!device || !device->device) {
+        return nullptr;
+    }
+    vk_buffer buf = nullptr;
     try {
         if (device->prefer_host_memory) {
             buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
@@ -3388,10 +3409,12 @@ static vk_buffer ggml_vk_create_buffer_device(vk_device& device, size_t size) {
                                                            vk::MemoryPropertyFlagBits::eDeviceLocal});
             }
         }
-    } catch (const vk::SystemError& e) {
-        std::cerr << "ggml_vulkan: Device memory allocation of size " << size << " failed." << std::endl;
-        std::cerr << "ggml_vulkan: " << e.what() << std::endl;
-        throw e;
+    } catch (const std::exception& e) {
+        std::cerr << "ggml_vulkan: Device memory allocation of size " << size << " failed: " << e.what() << std::endl;
+        return nullptr;
+    } catch (...) {
+        std::cerr << "ggml_vulkan: Device memory allocation of size " << size << " failed" << std::endl;
+        return nullptr;
     }
 
     return buf;
@@ -5905,6 +5928,11 @@ static uint32_t ggml_vk_intel_shader_core_count(const vk::PhysicalDevice& vkdev)
 
 static vk_device ggml_vk_get_device(size_t idx) {
     VK_LOG_DEBUG("ggml_vk_get_device(" << idx << ")");
+
+    if (idx >= GGML_VK_MAX_DEVICES || idx >= vk_instance.device_indices.size()) {
+        std::cerr << "ggml_vulkan: Device with index " << idx << " does not exist." << std::endl;
+        throw std::runtime_error("Device not found");
+    }
 
     if (vk_instance.devices[idx] == nullptr) {
         VK_LOG_DEBUG("Initializing new vk_device");
@@ -15606,21 +15634,33 @@ static ggml_backend_buffer_i ggml_backend_vk_buffer_interface = {
     /* .reset           = */ NULL,
 };
 
-// vk buffer type
 static const char * ggml_backend_vk_buffer_type_name(ggml_backend_buffer_type_t buft) {
-    ggml_backend_vk_buffer_type_context * ctx = (ggml_backend_vk_buffer_type_context *)buft->context;
-
-    return ctx->name.c_str();
+    UNUSED(buft);
+    return "Vulkan";
 }
 
 static ggml_backend_buffer_t ggml_backend_vk_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     VK_LOG_MEMORY("ggml_backend_vk_buffer_type_alloc_buffer(" << size << ")");
+    if (buft == nullptr || buft->context == nullptr) {
+        return nullptr;
+    }
     ggml_backend_vk_buffer_type_context * ctx = (ggml_backend_vk_buffer_type_context *) buft->context;
+    if (ctx->device == nullptr) {
+        return nullptr;
+    }
 
     vk_buffer dev_buffer = nullptr;
     try {
         dev_buffer = ggml_vk_create_buffer_device(ctx->device, size);
-    } catch (const vk::SystemError& e) {
+    } catch (const std::exception& e) {
+        std::cerr << "ggml_vulkan: alloc_buffer create_buffer_device failed: " << e.what() << std::endl;
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+
+    if (dev_buffer == nullptr || !dev_buffer->buffer) {
+        std::cerr << "ggml_vulkan: alloc_buffer dev_buffer is null, returning nullptr" << std::endl;
         return nullptr;
     }
 
@@ -15630,12 +15670,16 @@ static ggml_backend_buffer_t ggml_backend_vk_buffer_type_alloc_buffer(ggml_backe
 }
 
 static size_t ggml_backend_vk_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+    if (!buft || !buft->context) return 256;
     ggml_backend_vk_buffer_type_context * ctx = (ggml_backend_vk_buffer_type_context *) buft->context;
+    if (!ctx->device) return 256;
     return ctx->device->properties.limits.minStorageBufferOffsetAlignment;
 }
 
 static size_t ggml_backend_vk_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+    if (!buft || !buft->context) return 0;
     ggml_backend_vk_buffer_type_context * ctx = (ggml_backend_vk_buffer_type_context *) buft->context;
+    if (!ctx->device) return 0;
     return ctx->device->suballocation_block_size;
 }
 
@@ -15650,9 +15694,16 @@ ggml_backend_buffer_type_t ggml_backend_vk_buffer_type(size_t dev_num) {
 
     VK_LOG_DEBUG("ggml_backend_vk_buffer_type(" << dev_num << ")");
 
-    vk_device dev = ggml_vk_get_device(dev_num);
+    try {
+        vk_device dev = ggml_vk_get_device(dev_num);
+        if (dev != nullptr) {
+            return &dev->buffer_type;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "ggml_vulkan: ggml_backend_vk_buffer_type failed: " << e.what() << std::endl;
+    } catch (...) {}
 
-    return &dev->buffer_type;
+    return nullptr;
 }
 
 // host buffer type
@@ -15665,7 +15716,9 @@ static const char * ggml_backend_vk_host_buffer_type_name(ggml_backend_buffer_ty
 
 static void ggml_backend_vk_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     VK_LOG_MEMORY("ggml_backend_vk_host_buffer_free_buffer()");
-    ggml_vk_host_free(vk_instance.devices[0], buffer->context);
+    if (vk_instance.devices[0] != nullptr && buffer != nullptr && buffer->context != nullptr) {
+        ggml_vk_host_free(vk_instance.devices[0], buffer->context);
+    }
 }
 
 static ggml_backend_buffer_t ggml_backend_vk_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
@@ -15674,16 +15727,26 @@ static ggml_backend_buffer_t ggml_backend_vk_host_buffer_type_alloc_buffer(ggml_
     size += 32;  // Behave like the CPU buffer type
     void * ptr = nullptr;
     try {
+        if (vk_instance.devices[0] == nullptr) {
+            return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
+        }
         ptr = ggml_vk_host_malloc(vk_instance.devices[0], size);
-    } catch (vk::SystemError& e) {
+    } catch (const std::exception& e) {
         GGML_LOG_WARN("ggml_vulkan: Failed to allocate pinned memory (%s)\n", e.what());
-        // fallback to cpu buffer
+        return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
+    } catch (...) {
+        return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
+    }
+
+    if (ptr == nullptr) {
         return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
     }
 
     ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(ptr, size);
-    buffer->buft = buft;
-    buffer->iface.free_buffer = ggml_backend_vk_host_buffer_free_buffer;
+    if (buffer != nullptr) {
+        buffer->buft = buft;
+        buffer->iface.free_buffer = ggml_backend_vk_host_buffer_free_buffer;
+    }
 
     return buffer;
 
@@ -15691,12 +15754,14 @@ static ggml_backend_buffer_t ggml_backend_vk_host_buffer_type_alloc_buffer(ggml_
 }
 
 static size_t ggml_backend_vk_host_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+    if (vk_instance.devices[0] == nullptr) return 256;
     return vk_instance.devices[0]->properties.limits.minMemoryMapAlignment;
 
     UNUSED(buft);
 }
 
 static size_t ggml_backend_vk_host_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+    if (vk_instance.devices[0] == nullptr) return 0;
     return vk_instance.devices[0]->suballocation_block_size;
 
     UNUSED(buft);

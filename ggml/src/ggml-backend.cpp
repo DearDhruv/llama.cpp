@@ -31,7 +31,9 @@
 // backend buffer type
 
 const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
-    GGML_ASSERT(buft);
+    if (buft == NULL || buft->iface.get_name == NULL) {
+        return "unknown";
+    }
     return buft->iface.get_name(buft);
 }
 
