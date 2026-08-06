@@ -3570,8 +3570,14 @@ static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std
     buf->size = size;
 
     if (device->buffer_device_address) {
-        const vk::BufferDeviceAddressInfo addressInfo(buf->buffer);
-        buf->bda_addr = device->device.getBufferAddress(addressInfo);
+        try {
+            const vk::BufferDeviceAddressInfo addressInfo(buf->buffer);
+            buf->bda_addr = device->device.getBufferAddress(addressInfo);
+        } catch (...) {
+            buf->bda_addr = 0;
+        }
+    } else {
+        buf->bda_addr = 0;
     }
 
     device->memory_logger->log_allocation(buf, size);
@@ -6459,7 +6465,11 @@ static vk_device ggml_vk_get_device(size_t idx) {
         const uint32_t transfer_queue_family_index = ggml_vk_find_queue_family_index(queue_family_props, vk::QueueFlagBits::eTransfer, vk::QueueFlagBits::eCompute | graphics_flag, compute_queue_family_index, 1);
 
         const float priorities[] = { 1.0f, 1.0f };
-        device->single_queue = compute_queue_family_index == transfer_queue_family_index && queue_family_props[compute_queue_family_index].queueCount == 1;
+        if (transfer_queue_family_index == (uint32_t)-1 || compute_queue_family_index == transfer_queue_family_index || queue_family_props[compute_queue_family_index].queueCount == 1) {
+            device->single_queue = true;
+        } else {
+            device->single_queue = false;
+        }
 
         std::vector<vk::DeviceQueueCreateInfo> device_queue_create_infos;
         vk::DeviceCreateInfo device_create_info{};
@@ -6479,9 +6489,13 @@ static vk_device ggml_vk_get_device(size_t idx) {
         VkPhysicalDeviceVulkan12Features vk12_features;
         vk12_features.pNext = nullptr;
         vk12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-        vk11_features.pNext = &vk12_features;
 
-        last_struct = (VkBaseOutStructure *)&vk12_features;
+        if (device->properties.apiVersion >= VK_API_VERSION_1_2) {
+            vk11_features.pNext = &vk12_features;
+            last_struct = (VkBaseOutStructure *)&vk12_features;
+        } else {
+            last_struct = (VkBaseOutStructure *)&vk11_features;
+        }
 
         VkPhysicalDeviceInternallySynchronizedQueuesFeaturesKHR internally_synchronized_queues_features{};
         internally_synchronized_queues_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR;
@@ -6720,13 +6734,15 @@ static vk_device ggml_vk_get_device(size_t idx) {
                         (PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV)
                         vk_instance.instance.getProcAddr("vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV");
 
-                _vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(device->physical_device, &count, nullptr);
+                if (_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV != nullptr) {
+                    _vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(device->physical_device, &count, nullptr);
 
-                VkCooperativeMatrixFlexibleDimensionsPropertiesNV empty_prop {};
-                empty_prop.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_FLEXIBLE_DIMENSIONS_PROPERTIES_NV;
-                flexible_dimensions.resize(count, empty_prop);
+                    VkCooperativeMatrixFlexibleDimensionsPropertiesNV empty_prop {};
+                    empty_prop.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_FLEXIBLE_DIMENSIONS_PROPERTIES_NV;
+                    flexible_dimensions.resize(count, empty_prop);
 
-                _vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(device->physical_device, &count, flexible_dimensions.data());
+                    _vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(device->physical_device, &count, flexible_dimensions.data());
+                }
 
                 bool found_fp16_128 = false,
                      found_fp16_256 = false,
@@ -6804,12 +6820,11 @@ static vk_device ggml_vk_get_device(size_t idx) {
 #endif
         }
 
-        if (!vk11_features.storageBuffer16BitAccess) {
-            std::cerr << "ggml_vulkan: device " << GGML_VK_NAME << idx << " does not support 16-bit storage." << std::endl;
-            throw std::runtime_error("Unsupported device");
+        if (vk11_features.storageBuffer16BitAccess) {
+            device_extensions.push_back("VK_KHR_16bit_storage");
+        } else {
+            std::cerr << "ggml_vulkan: device " << GGML_VK_NAME << idx << " does not support 16-bit storage (continuing without extension)." << std::endl;
         }
-
-        device_extensions.push_back("VK_KHR_16bit_storage");
 
 #ifdef GGML_VULKAN_VALIDATE
         device_extensions.push_back("VK_KHR_shader_non_semantic_info");
@@ -6827,17 +6842,18 @@ static vk_device ggml_vk_get_device(size_t idx) {
             PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR =
                 (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)vkGetInstanceProcAddr(vk_instance.instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
 
-            uint32_t cm_props_num;
+            if (pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR != nullptr) {
+                uint32_t cm_props_num = 0;
+                pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(device->physical_device, &cm_props_num, nullptr);
 
-            pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(device->physical_device, &cm_props_num, nullptr);
+                cm_props.resize(cm_props_num);
 
-            cm_props.resize(cm_props_num);
+                for (auto& prop : cm_props) {
+                    prop.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+                }
 
-            for (auto& prop : cm_props) {
-                prop.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+                pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(device->physical_device, &cm_props_num, cm_props.data());
             }
-
-            pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(device->physical_device, &cm_props_num, cm_props.data());
 
             VK_LOG_DEBUG("ggml_vulkan: Cooperative Matrix Shapes: " << cm_props.size());
 
@@ -6933,11 +6949,34 @@ static vk_device ggml_vk_get_device(size_t idx) {
 #endif
         device->name = GGML_VK_NAME + std::to_string(idx);
 
+        const std::vector<vk::ExtensionProperties> supported_exts = device->physical_device.enumerateDeviceExtensionProperties();
+        std::vector<const char*> filtered_extensions;
+        for (const char* ext : device_extensions) {
+            bool found = false;
+            for (const auto& prop : supported_exts) {
+                if (strcmp(ext, prop.extensionName) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                filtered_extensions.push_back(ext);
+            } else {
+                std::cerr << "ggml_vulkan: filtering out unsupported device extension: " << ext << std::endl;
+            }
+        }
+
         device_create_info
             .setFlags(vk::DeviceCreateFlags())
             .setQueueCreateInfos(device_queue_create_infos)
-            .setPEnabledExtensionNames(device_extensions);
-        device_create_info.setPNext(&device_features2);
+            .setPEnabledExtensionNames(filtered_extensions);
+
+        if (device->vendor_id == VK_VENDOR_ID_QUALCOMM) {
+            device_create_info.setPEnabledFeatures(&device_features);
+            device_create_info.setPNext(nullptr);
+        } else {
+            device_create_info.setPNext(&device_features2);
+        }
         device->device = device->physical_device.createDevice(device_create_info);
 
         if (device->device_fault) {
@@ -7357,9 +7396,9 @@ static void ggml_vk_instance_init() {
 
     uint32_t api_version = vk::enumerateInstanceVersion();
 
-    if (api_version < VK_API_VERSION_1_2) {
-        std::cerr << "ggml_vulkan: Error: Vulkan 1.2 required." << std::endl;
-        throw vk::SystemError(vk::Result::eErrorFeatureNotPresent, "Vulkan 1.2 required");
+    if (api_version < VK_API_VERSION_1_0) {
+        std::cerr << "ggml_vulkan: Error: Vulkan 1.0 required." << std::endl;
+        throw vk::SystemError(vk::Result::eErrorFeatureNotPresent, "Vulkan 1.0 required");
     }
 
     vk::ApplicationInfo app_info{ "ggml-vulkan", 1, nullptr, 0, api_version };
