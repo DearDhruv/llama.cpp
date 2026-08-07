@@ -6664,7 +6664,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
                                                 eInternallySynchronizedKHR :
                                                 vk::DeviceQueueCreateFlags();
 
-        if (compute_queue_family_index != transfer_queue_family_index) {
+        if (transfer_queue_family_index != (uint32_t)-1 && compute_queue_family_index != transfer_queue_family_index) {
             device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, 1, priorities});
             device_queue_create_infos.push_back({queue_flags, transfer_queue_family_index, 1, priorities + 1});
         } else if(!device->single_queue) {
@@ -6972,12 +6972,36 @@ static vk_device ggml_vk_get_device(size_t idx) {
             .setPEnabledExtensionNames(filtered_extensions);
 
         if (device->vendor_id == VK_VENDOR_ID_QUALCOMM) {
-            device_create_info.setPEnabledFeatures(&device_features);
-            device_create_info.setPNext(nullptr);
+            std::vector<const char*> qcom_extensions;
+            for (const char* ext : filtered_extensions) {
+                if (strcmp(ext, "VK_KHR_buffer_device_address") == 0 ||
+                    strcmp(ext, "VK_KHR_16bit_storage") == 0 ||
+                    strcmp(ext, "VK_KHR_8bit_storage") == 0 ||
+                    strcmp(ext, "VK_KHR_shader_float16_int8") == 0) {
+                    continue;
+                }
+                qcom_extensions.push_back(ext);
+            }
+            if (qcom_extensions.empty()) {
+                device_create_info.enabledExtensionCount = 0;
+                device_create_info.ppEnabledExtensionNames = nullptr;
+            } else {
+                device_create_info.setPEnabledExtensionNames(qcom_extensions);
+            }
+            device_create_info.pEnabledFeatures = nullptr;
+            device_create_info.pNext = nullptr;
+            try {
+                device->device = device->physical_device.createDevice(device_create_info);
+            } catch (const std::exception& ex) {
+                std::cerr << "ggml_vulkan: qcom createDevice error: " << ex.what() << std::endl;
+                device_create_info.enabledExtensionCount = 0;
+                device_create_info.ppEnabledExtensionNames = nullptr;
+                device->device = device->physical_device.createDevice(device_create_info);
+            }
         } else {
             device_create_info.setPNext(&device_features2);
+            device->device = device->physical_device.createDevice(device_create_info);
         }
-        device->device = device->physical_device.createDevice(device_create_info);
 
         if (device->device_fault) {
             device->pfn_vkGetDeviceFaultInfoEXT = (PFN_vkGetDeviceFaultInfoEXT)
