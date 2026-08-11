@@ -250,7 +250,7 @@ if (Vulkan_FOUND)
             COMMENT "Generate vulkan shaders for ${file}"
         )
         target_sources(ggml-vulkan PRIVATE ${_ggml_vk_target_cpp})
-        set_source_files_properties(${_ggml_vk_target_cpp} PROPERTIES COMPILE_FLAGS "-O0")
+        set_source_files_properties(${_ggml_vk_target_cpp} PROPERTIES COMPILE_OPTIONS "-O0" COMPILE_FLAGS "-O0")
     endforeach()
 
 else()
