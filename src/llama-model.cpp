@@ -116,6 +116,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_qwen3vlmoe(params);
         case LLM_ARCH_QWEN3TTS:
             return new llama_model_qwen3tts(params);
+        case LLM_ARCH_POCKETTTS:
+            return new llama_model_pockettts(params);
         case LLM_ARCH_PHI2:
             return new llama_model_phi2(params);
         case LLM_ARCH_PHI3:
@@ -1120,6 +1122,9 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
 
         ml.get_key(LLM_KV_CONVNEXT_EMBEDDING_LENGTH, hparams.convnext.n_embd);
         ml.get_key(LLM_KV_CONVNEXT_BLOCK_COUNT,      hparams.convnext.n_layer);
+
+        GGML_ASSERT(hparams.posnet.n_layer   <= hparams.n_layer_all);
+        GGML_ASSERT(hparams.convnext.n_layer <= hparams.n_layer_all);
     }
 
     GGML_ASSERT(hparams.n_expert <= LLAMA_MAX_EXPERTS);
@@ -2637,6 +2642,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_MAINCODER:
         case LLM_ARCH_GLM_DSA:
         case LLM_ARCH_NANBEIGE:
+        case LLM_ARCH_POCKETTTS:
             return LLAMA_ROPE_TYPE_NORM;
 
         // the pairs of head values are offset by n_rot/2
