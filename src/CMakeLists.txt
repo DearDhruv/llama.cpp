@@ -45,14 +45,9 @@ add_library(llama
             )
 
 set_target_properties(llama PROPERTIES
-    VERSION ${LLAMA_VERSION_BASE}
-    SOVERSION ${LLAMA_VERSION_MAJOR}
+    VERSION ${LLAMA_INSTALL_VERSION}
+    SOVERSION 0
     MACHO_CURRENT_VERSION 0 # keep macOS linker from seeing oversized version number
-)
-
-target_compile_definitions(llama PRIVATE
-    LLAMA_VERSION="${LLAMA_VERSION}"
-    LLAMA_COMMIT="${LLAMA_BUILD_COMMIT}"
 )
 
 target_include_directories(llama PRIVATE .)
