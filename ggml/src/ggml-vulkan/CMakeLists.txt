@@ -62,11 +62,21 @@ if (Vulkan_FOUND)
     ggml_add_backend_library(ggml-vulkan
                              ggml-vulkan.cpp
                              ../../include/ggml-vulkan.h
+                             ggml-vulkan-types.h
+                             ggml-vulkan-push-constants.h
+                             ggml-vulkan-common.h
+                             ggml-vulkan-buffers.cpp
+                             ggml-vulkan-debug.cpp
                             )
     find_path(VULKAN_HPP_INCLUDE_DIR NAMES vulkan/vulkan.hpp PATHS "/opt/homebrew/include" "/usr/local/include" NO_CMAKE_FIND_ROOT_PATH)
     if (VULKAN_HPP_INCLUDE_DIR)
         target_include_directories(ggml-vulkan PRIVATE ${VULKAN_HPP_INCLUDE_DIR})
     endif()
+
+    # hide symbols, so dlclosed duplicate copies cannot interpose them
+    set_target_properties(ggml-vulkan PROPERTIES
+                          CXX_VISIBILITY_PRESET hidden
+                          VISIBILITY_INLINES_HIDDEN ON)
 
     set(VULKAN_SHADER_GEN_CMAKE_ARGS "")
 
