@@ -18,8 +18,6 @@
 # ggml-org/llama-ui           : allozaur
 
 /.devops/*.Dockerfile                   @ngxson
-/.github/actions/                       @ggml-org/ci
-/.github/workflows/                     @ggml-org/ci
 /ci/                                    @ggerganov
 /cmake/                                 @ggerganov
 /common/                                @ggml-org/llama-common
